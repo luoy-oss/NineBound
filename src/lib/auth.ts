@@ -1,18 +1,41 @@
-import { SignJWT, jwtVerify } from "jose";
+import crypto from "crypto";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 
-function getSecret(): Uint8Array {
-  return new TextEncoder().encode(process.env.JWT_SECRET!);
+const JWT_SECRET = process.env.JWT_SECRET!;
+const SALT = "NineBound";
+
+export function generateUid(qq: string): string {
+  return crypto
+    .createHash("sha256")
+    .update(qq + SALT)
+    .digest("hex")
+    .slice(0, 12);
 }
 
-export async function signToken(uid: string): Promise<string> {
-  return new SignJWT({ uid })
-    .setProtectedHeader({ alg: "HS256" })
-    .setIssuedAt()
-    .setExpirationTime("7d")
-    .sign(getSecret());
+export function hashQq(qq: string): string {
+  return crypto.createHash("sha256").update(qq).digest("hex");
 }
 
-export async function verifyToken(token: string): Promise<{ uid: string }> {
-  const { payload } = await jwtVerify(token, getSecret());
-  return { uid: payload.uid as string };
+export async function hashPassword(password: string): Promise<string> {
+  return bcrypt.hash(password, 10);
+}
+
+export async function verifyPassword(
+  password: string,
+  hash: string
+): Promise<boolean> {
+  return bcrypt.compare(password, hash);
+}
+
+export function signJwt(uid: string): string {
+  return jwt.sign({ uid }, JWT_SECRET, { expiresIn: "7d" });
+}
+
+export function verifyJwt(token: string): { uid: string } | null {
+  try {
+    return jwt.verify(token, JWT_SECRET) as { uid: string };
+  } catch {
+    return null;
+  }
 }

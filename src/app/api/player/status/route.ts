@@ -1,23 +1,29 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/mongodb";
-import { getAuthenticatedUid, errorResponse } from "@/lib/api-helpers";
-import type { UserDoc, PendingRewardDoc } from "@/types/database";
+import { verifyJwt } from "@/lib/auth";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const uid = await getAuthenticatedUid();
-    const db = await getDb();
-    const users = db.collection<UserDoc>("users");
-    const rewards = db.collection<PendingRewardDoc>("pending_rewards");
-
-    const user = await users.findOne({ uid });
-    if (!user) {
-      return errorResponse("玩家不存在", 404);
+    const auth = req.headers.get("authorization");
+    if (!auth?.startsWith("Bearer ")) {
+      return NextResponse.json({ error: "未授权" }, { status: 401 });
     }
 
-    const pendingRewards = await rewards
-      .find({ uid, claimed: false })
-      .toArray();
+    const payload = verifyJwt(auth.slice(7));
+    if (!payload) {
+      return NextResponse.json({ error: "Token无效或已过期" }, { status: 401 });
+    }
+
+    const db = await getDb();
+    const user = await db.collection("users").findOne({ uid: payload.uid });
+    if (!user) {
+      return NextResponse.json({ error: "用户不存在" }, { status: 404 });
+    }
+
+    // 查询待领取奖励
+    const pending = await db
+      .collection("pending_rewards")
+      .findOne({ uid: payload.uid, claimed: false });
 
     return NextResponse.json({
       uid: user.uid,
@@ -28,16 +34,11 @@ export async function GET() {
       gems: user.gems,
       equipment: user.equipment,
       unlockedSkills: user.unlockedSkills,
-      pendingRewards: pendingRewards.map((r) => ({
-        _id: r._id?.toString(),
-        coins: r.coins,
-        items: r.items,
-        hasToken: !!r.token,
-        token: r.token,
-        tokenExpiry: r.tokenExpiry,
-      })),
+      pendingRewards: pending
+        ? { coins: pending.coins, items: pending.items, hasToken: !!pending.token }
+        : null,
     });
-  } catch {
-    return errorResponse("认证失败", 401);
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message || "服务器错误" }, { status: 500 });
   }
 }

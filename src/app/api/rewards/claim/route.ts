@@ -1,70 +1,57 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/mongodb";
-import { errorResponse } from "@/lib/api-helpers";
-import { claimSchema } from "@/lib/validators";
-import type { UserDoc, PendingRewardDoc } from "@/types/database";
 
 // 此接口预留给洛玖Bot调用
-export async function POST(request: NextRequest) {
+export async function POST(req: NextRequest) {
   try {
-    const body = await request.json();
-    const parsed = claimSchema.safeParse(body);
-    if (!parsed.success) {
-      return errorResponse("参数错误");
+    const { uid, token } = await req.json();
+
+    if (!uid || !token) {
+      return NextResponse.json({ error: "uid和token不能为空" }, { status: 400 });
     }
 
-    const { uid, token } = parsed.data;
     const db = await getDb();
-    const users = db.collection<UserDoc>("users");
-    const rewards = db.collection<PendingRewardDoc>("pending_rewards");
-
-    const pending = await rewards.findOne({
-      uid,
-      token,
-      claimed: false,
-    });
+    const pending = await db
+      .collection("pending_rewards")
+      .findOne({ uid, claimed: false });
 
     if (!pending) {
-      return errorResponse("无效的领取码", 404);
+      return NextResponse.json({ error: "没有待领取的奖励" }, { status: 404 });
     }
 
-    if (new Date() > pending.tokenExpiry) {
-      return errorResponse("领取码已过期，请重新生成");
+    if (!pending.token || pending.token !== token) {
+      return NextResponse.json({ error: "领取码错误" }, { status: 400 });
+    }
+
+    if (!pending.tokenExpiry || new Date(pending.tokenExpiry) < new Date()) {
+      return NextResponse.json({ error: "领取码已过期" }, { status: 400 });
+    }
+
+    // 发放奖励到用户账户
+    const updateResult = await db.collection("users").updateOne(
+      { uid },
+      {
+        $inc: { coins: pending.coins, gems: 0 },
+        $push: { equipment: { $each: pending.items } } as any,
+        $set: { updatedAt: new Date() },
+      }
+    );
+
+    if (updateResult.matchedCount === 0) {
+      return NextResponse.json({ error: "用户不存在" }, { status: 404 });
     }
 
     // 标记已领取
-    await rewards.updateOne(
-      { _id: pending._id },
-      { $set: { claimed: true } }
-    );
-
-    // 发放奖励到玩家账户
-    const updateOps: Record<string, unknown> = {
-      $inc: {
-        coins: pending.coins,
-        gems: pending.items.reduce((sum, item) => {
-          if (item.rarity === "legendary") return sum + 3;
-          if (item.rarity === "epic") return sum + 2;
-          return sum;
-        }, 0),
-      },
-      $set: { updatedAt: new Date() },
-    };
-
-    if (pending.items.length > 0) {
-      updateOps["$push"] = {
-        equipment: { $each: pending.items },
-      };
-    }
-
-    await users.updateOne({ uid }, updateOps);
+    await db
+      .collection("pending_rewards")
+      .updateOne({ uid, claimed: false }, { $set: { claimed: true } });
 
     return NextResponse.json({
       success: true,
       coins: pending.coins,
       items: pending.items,
     });
-  } catch {
-    return errorResponse("服务器错误", 500);
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message || "服务器错误" }, { status: 500 });
   }
 }

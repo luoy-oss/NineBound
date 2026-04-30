@@ -1,65 +1,64 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/mongodb";
-import { hashQQ } from "@/lib/crypto";
-import { signToken } from "@/lib/auth";
-import { loginSchema } from "@/lib/validators";
-import bcrypt from "bcryptjs";
-import type { UserDoc } from "@/types/database";
+import {
+  generateUid,
+  hashQq,
+  hashPassword,
+  verifyPassword,
+  signJwt,
+} from "@/lib/auth";
 
-export async function POST(request: NextRequest) {
+export async function POST(req: NextRequest) {
   try {
-    const body = await request.json();
-    const parsed = loginSchema.safeParse(body);
-    if (!parsed.success) {
-      return NextResponse.json(
-        { error: parsed.error.errors[0].message },
-        { status: 400 }
-      );
+    const { qq, password } = await req.json();
+
+    if (!qq || !password) {
+      return NextResponse.json({ error: "QQ号和密码不能为空" }, { status: 400 });
+    }
+    if (!/^\d{5,11}$/.test(qq)) {
+      return NextResponse.json({ error: "QQ号格式不正确" }, { status: 400 });
+    }
+    if (password.length < 6 || password.length > 16) {
+      return NextResponse.json({ error: "密码长度6-16位" }, { status: 400 });
     }
 
-    const { qq, password } = parsed.data;
     const db = await getDb();
-    const users = db.collection<UserDoc>("users");
+    const users = db.collection("users");
+    const uid = generateUid(qq);
 
-    const qqHash = hashQQ(qq);
-    const user = await users.findOne({ qqHash });
-    if (!user) {
-      return NextResponse.json(
-        { error: "账号不存在，请先注册" },
-        { status: 404 }
-      );
+    const existing = await users.findOne({ uid });
+
+    if (!existing) {
+      // 首次登录，自动注册
+      const now = new Date();
+      const newUser = {
+        uid,
+        qqHash: hashQq(qq),
+        passwordHash: await hashPassword(password),
+        nickname: "丧家之犬",
+        floor: 1,
+        power: 100,
+        coins: 0,
+        gems: 0,
+        equipment: [],
+        unlockedSkills: ["slash"],
+        createdAt: now,
+        updatedAt: now,
+      };
+      await users.insertOne(newUser);
+      const token = signJwt(uid);
+      return NextResponse.json({ uid, jwt: token, nickname: newUser.nickname, isNew: true });
     }
 
-    const valid = await bcrypt.compare(password, user.passwordHash);
+    // 验证密码
+    const valid = await verifyPassword(password, existing.passwordHash as string);
     if (!valid) {
-      return NextResponse.json(
-        { error: "密码错误" },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "密码错误" }, { status: 401 });
     }
 
-    const token = await signToken(user.uid);
-
-    const response = NextResponse.json({
-      success: true,
-      uid: user.uid,
-      nickname: user.nickname,
-    });
-
-    response.cookies.set("nb_token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      maxAge: 7 * 24 * 60 * 60,
-      path: "/",
-    });
-
-    return response;
-  } catch (err) {
-    console.error("Login error:", err);
-    return NextResponse.json(
-      { error: `服务器错误: ${err instanceof Error ? err.message : String(err)}` },
-      { status: 500 }
-    );
+    const token = signJwt(uid);
+    return NextResponse.json({ uid, jwt: token, nickname: existing.nickname, isNew: false });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message || "服务器错误" }, { status: 500 });
   }
 }
