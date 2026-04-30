@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
 
-const secret = new TextEncoder().encode(process.env.JWT_SECRET);
+function getSecret(): Uint8Array {
+  return new TextEncoder().encode(process.env.JWT_SECRET!);
+}
 
 const protectedRoutes = ["/play", "/player", "/rewards"];
 const authRoutes = ["/login", "/register"];
@@ -13,7 +15,7 @@ export async function middleware(request: NextRequest) {
   let isAuthenticated = false;
   if (token) {
     try {
-      await jwtVerify(token, secret);
+      await jwtVerify(token, getSecret());
       isAuthenticated = true;
     } catch {
       // Token无效或已过期
